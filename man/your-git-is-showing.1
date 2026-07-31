@@ -1,0 +1,103 @@
+.TH YOUR-GIT-IS-SHOWING 1 "July 2026" "v0.1.0" "User Commands"
+.SH NAME
+your-git-is-showing \- dump an exposed git repository
+.SH SYNOPSIS
+.B your-git-is-showing
+[\fB\-b\fR \fIbranch\fR]
+[\fB\-version\fR]
+.I URL DIR
+.SH DESCRIPTION
+Your \fI.git\fR is showing!
+.B your-git-is-showing
+is a single-purpose tool that downloads an exposed Git repository served
+over HTTP. Given a site URL, it fetches
+.I .git
+metadata (HEAD, refs, index, pack files, loose objects) and reconstructs the
+repository locally. Enumerate a site to find the
+.I .git,
+or fire-and-forget and see what comes back.
+.PP
+.I URL
+is the site root (or the directory containing the repo); the tool appends
+.I /\.git
+paths for you.
+.I DIR
+is the local directory where the reconstructed repo is written. On success
+the tool sanitizes
+.I .git/config
+(commenting out
+.I fsmonitor,
+.I sshCommand,
+.I askpass,
+.I editor,
+and
+.I pager
+entries) and runs
+.BR "git checkout ."
+to restore the working tree.
+.PP
+If
+.I /\.git/
+serves an HTML directory listing, the tool switches to recursive mode and
+walks the listing; otherwise it uses targeted fetching of common files,
+refs, pack files, and loose objects.
+.SH FEATURES
+.TP
+.B 50 concurrent requests
+.TP
+.B 3 retries per request, 3s per-request timeout
+.TP
+.B Browser user-agent by default
+.TP
+.B Probes 10 common branch names by default
+(main, master, staging, production, development, dev, develop, release, qa,
+hotfix)
+.TP
+.B Recursive download of /\.git/
+when the server exposes a directory listing
+.SH OPTIONS
+.TP
+.BI \-b " branch"
+additional branch name to check for (repeatable)
+.TP
+.B \-version
+print version and exit
+.SH EXAMPLES
+.TP
+.B your-git-is-showing https://example.com/ myrepo
+.TP
+.B your-git-is-showing \-b develop https://example.com/repo/ repo-dump
+.SH EXIT STATUS
+.TP
+.B 0
+success — somebody's secrets just became yours
+.TP
+.B 1
+dump failed
+.TP
+.B 2
+invalid usage
+.SH BUILD
+.TP
+.B go build .
+.TP
+.B go test ./...
+.SH INSTALL
+.TP
+.B go install github.com/meta-byte/your-git-is-showing@latest
+Requires Go 1.25+. Installs into
+.I $GOPATH/bin.
+Or build from source:
+.TP
+.B go build .
+.SH DEPENDENCIES
+.TP
+.B golang.org/x/net
+(HTML parsing),
+.B golang.org/x/sync
+(bounded worker pool).
+.SH NOTE
+Fun, but not a toy. Running this against a target you don't own is how you
+make an enemies list. Ask first, point out the
+.I .git
+after — gently.

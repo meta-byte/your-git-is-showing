@@ -1,8 +1,8 @@
-# your-git-is-showing(1)
+# your-git-is-showing
 
 ## NAME
 
-your-git-is-showing — dump a Git repository exposed on a website (and give the dev a stern lecture)
+your-git-is-showing — dump an exposed git repository
 
 ## SYNOPSIS
 
@@ -43,6 +43,12 @@ Requires Go 1.25+. Installs into `$GOPATH/bin`. Or build from source:
 
 ```
 go build .
+```
+
+A man page ships in `man/your-git-is-showing.1`. View it without installing:
+
+```
+mandoc -Tutf8 man/your-git-is-showing.1
 ```
 
 ## EXAMPLES
