@@ -2,7 +2,7 @@
 
 ## NAME
 
-your-git-is-showing — dump a Git repository exposed on a website
+your-git-is-showing — dump a Git repository exposed on a website (and give the dev a stern lecture)
 
 ## SYNOPSIS
 
@@ -12,9 +12,9 @@ your-git-is-showing [options] URL DIR
 
 ## DESCRIPTION
 
-Downloads a Git repository served over HTTP. Given a site URL, it fetches `.git` metadata (HEAD, refs, index, pack files, loose objects) and reconstructs the repository locally.
+Your `.git` is showing! `your-git-is-showing` is a single-purpose tool that downloads an exposed Git repository served over HTTP. Given a site URL, it fetches `.git` metadata (HEAD, refs, index, pack files, loose objects) and reconstructs the repository locally. Enumerate a site to find the `.git`, or fire-and-forget and see what comes back.
 
-`URL` is the site root (or the directory containing the repo); the tool appends `/.git` paths to it. `DIR` is the local directory where the reconstructed repo is written. On success the tool sanitizes `.git/config` (commenting out `fsmonitor`, `sshCommand`, `askpass`, `editor`, `pager` entries) and runs `git checkout .` to restore the working tree.
+`URL` is the site root (or the directory containing the repo); the tool appends `/.git` paths for you. `DIR` is the local directory where the reconstructed repo is written. On success the tool sanitizes `.git/config` (commenting out `fsmonitor`, `sshCommand`, `askpass`, `editor`, `pager` entries) and runs `git checkout .` to restore the working tree.
 
 If `/.git/` serves an HTML directory listing, the tool switches to recursive mode and walks the listing; otherwise it uses targeted fetching of common files, refs, pack files, and loose objects.
 
@@ -43,7 +43,7 @@ your-git-is-showing -b develop https://example.com/repo/ repo-dump
 
 | Code | Meaning |
 | --- | --- |
-| 0 | success |
+| 0 | success — somebody's secrets just became yours |
 | 1 | dump failed |
 | 2 | invalid usage |
 
@@ -57,3 +57,7 @@ go test ./...
 ## DEPENDENCIES
 
 `golang.org/x/net` (HTML parsing), `golang.org/x/sync` (bounded worker pool).
+
+## NOTE
+
+Fun, but not a toy. Running this against a target you don't own is how you make an enemies list. Ask first, point out the `.git` after — gently.

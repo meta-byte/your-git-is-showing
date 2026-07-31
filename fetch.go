@@ -101,66 +101,83 @@ func fetchGit(opts FetchOptions) error {
 		return fmt.Errorf("%s is not a directory", opts.Directory)
 	}
 
-	client := newHTTPClient()
-
 	if entries, _ := os.ReadDir(opts.Directory); len(entries) > 0 {
 		fmt.Printf("Warning: Destination '%s' is not empty\n", opts.Directory)
 	}
 
-	url := normalizeBaseURL(opts.BaseURL)
 	ctx := &downloadContext{
-		baseURL:   url,
+		baseURL:   normalizeBaseURL(opts.BaseURL),
 		directory: opts.Directory,
-		client:    client,
+		client:    newHTTPClient(),
 	}
+
+	listing, err := probe(ctx)
+	if err != nil {
+		return err
+	}
+	if listing {
+		return fetchRecursive(ctx)
+	}
+	return fetchTargeted(ctx, opts)
+}
+
+// probe verifies the target serves a usable .git directory and reports
+// whether /.git/ exposes an HTML directory listing.
+func probe(ctx *downloadContext) (bool, error) {
+	url := ctx.baseURL
 
 	fmt.Printf("[-] Testing %s/.git/HEAD ", url)
 	resp, body, err := ctx.doGet(".git/HEAD")
 	if err != nil {
-		return fmt.Errorf("unable to connect to %s: %w", url, err)
+		return false, fmt.Errorf("unable to connect to %s: %w", url, err)
 	}
 	fmt.Printf("[%d]\n", resp.StatusCode)
 	if err := verifyResponse(resp); err != nil {
-		return fmt.Errorf("%s/.git/HEAD %w", url, err)
+		return false, fmt.Errorf("%s/.git/HEAD %w", url, err)
 	}
 	if !headPattern.MatchString(strings.TrimSpace(string(body))) {
-		return fmt.Errorf("%s/.git/HEAD is not a git HEAD file", url)
+		return false, fmt.Errorf("%s/.git/HEAD is not a git HEAD file", url)
 	}
 
 	fmt.Printf("[-] Testing %s/.git/ ", url)
-	gitDirResp, gitDirBody, err := ctx.doGet(".git/")
+	resp, body, err = ctx.doGet(".git/")
 	if err != nil {
-		return fmt.Errorf("error fetching .git/: %w", err)
+		return false, fmt.Errorf("error fetching .git/: %w", err)
 	}
-	fmt.Printf("[%d]\n", gitDirResp.StatusCode)
+	fmt.Printf("[%d]\n", resp.StatusCode)
 
-	if gitDirResp.StatusCode == http.StatusOK && isHTML(gitDirResp) {
-		indexed := getIndexedFiles(string(gitDirBody))
-		hasHead := false
-		for _, f := range indexed {
-			if f == "HEAD" {
-				hasHead = true
-				break
-			}
-		}
-		if hasHead {
-			fmt.Printf("[-] Fetching .git recursively\n")
-			if err := processTasks([]string{".git/", ".gitignore"}, defaultJobs, makeRecursiveDownloadWorker(ctx), nil); err != nil {
-				return err
-			}
-
-			fmt.Printf("[-] Sanitizing .git/config\n")
-			if err := sanitizeFile(filepath.Join(opts.Directory, ".git", "config")); err != nil {
-				return err
-			}
-			fmt.Printf("[-] Running git checkout .\n")
-			if err := runGitCheckout(opts.Directory); err != nil {
-				return fmt.Errorf("git checkout failed: %w", err)
-			}
-			return nil
+	if resp.StatusCode != http.StatusOK || !isHTML(resp) {
+		return false, nil
+	}
+	for _, f := range getIndexedFiles(string(body)) {
+		if f == "HEAD" {
+			return true, nil
 		}
 	}
+	return false, nil
+}
 
+// fetchRecursive downloads the entire .git tree from an HTML directory listing.
+func fetchRecursive(ctx *downloadContext) error {
+	fmt.Printf("[-] Fetching .git recursively\n")
+	if err := processTasks([]string{".git/", ".gitignore"}, defaultJobs, makeRecursiveDownloadWorker(ctx), nil); err != nil {
+		return err
+	}
+
+	fmt.Printf("[-] Sanitizing .git/config\n")
+	if err := sanitizeFile(filepath.Join(ctx.directory, ".git", "config")); err != nil {
+		return err
+	}
+	fmt.Printf("[-] Running git checkout .\n")
+	if err := runGitCheckout(ctx.directory); err != nil {
+		return fmt.Errorf("git checkout failed: %w", err)
+	}
+	return nil
+}
+
+// fetchTargeted reconstructs the repo without a directory listing by
+// fetching known files, refs, packs, and loose objects.
+func fetchTargeted(ctx *downloadContext, opts FetchOptions) error {
 	fmt.Printf("[-] Fetching common files\n")
 	if err := processTasks(commonFileTasks, defaultJobs, makeDownloadWorker(ctx), nil); err != nil {
 		return err
@@ -181,23 +198,12 @@ func fetchGit(opts FetchOptions) error {
 	}
 
 	fmt.Printf("[-] Finding packs\n")
-	var packTasks []string
-	infoPacksPath := filepath.Join(opts.Directory, ".git", "objects", "info", "packs")
-	if data, err := os.ReadFile(infoPacksPath); err == nil {
-		for _, m := range packRe.FindAllStringSubmatch(string(data), -1) {
-			sha1 := m[1]
-			packTasks = append(packTasks,
-				fmt.Sprintf(".git/objects/pack/pack-%s.idx", sha1),
-				fmt.Sprintf(".git/objects/pack/pack-%s.pack", sha1),
-			)
-		}
-	}
-	if err := processTasks(packTasks, defaultJobs, makeDownloadWorker(ctx), nil); err != nil {
+	if err := processTasks(packTasksFromInfo(ctx.directory), defaultJobs, makeDownloadWorker(ctx), nil); err != nil {
 		return err
 	}
 
 	fmt.Printf("[-] Finding objects\n")
-	objs, packedObjs, err := collectObjectSHAs(opts.Directory)
+	objs, packedObjs, err := collectObjectSHAs(ctx.directory)
 	if err != nil {
 		return fmt.Errorf("error collecting objects: %w", err)
 	}
@@ -212,16 +218,31 @@ func fetchGit(opts FetchOptions) error {
 		return err
 	}
 
-	fmt.Printf("[-] Running git checkout .\n")
-	if err := sanitizeFile(filepath.Join(opts.Directory, ".git", "config")); err != nil {
+	fmt.Printf("[-] Sanitizing .git/config\n")
+	if err := sanitizeFile(filepath.Join(ctx.directory, ".git", "config")); err != nil {
 		return err
 	}
-
-	if err := runGitCheckout(opts.Directory); err != nil {
+	fmt.Printf("[-] Running git checkout .\n")
+	if err := runGitCheckout(ctx.directory); err != nil {
 		return fmt.Errorf("git checkout failed: %w", err)
 	}
-
 	return nil
+}
+
+// packTasksFromInfo lists the .idx/.pack pairs named in .git/objects/info/packs.
+func packTasksFromInfo(directory string) []string {
+	var packTasks []string
+	infoPacksPath := filepath.Join(directory, ".git", "objects", "info", "packs")
+	if data, err := os.ReadFile(infoPacksPath); err == nil {
+		for _, m := range packRe.FindAllStringSubmatch(string(data), -1) {
+			sha1 := m[1]
+			packTasks = append(packTasks,
+				fmt.Sprintf(".git/objects/pack/pack-%s.idx", sha1),
+				fmt.Sprintf(".git/objects/pack/pack-%s.pack", sha1),
+			)
+		}
+	}
+	return packTasks
 }
 
 func runGitCheckout(directory string) error {

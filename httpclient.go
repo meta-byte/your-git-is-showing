@@ -48,6 +48,18 @@ func verifyResponse(resp *http.Response) error {
 }
 
 func (c *downloadContext) doGet(path string) (*http.Response, []byte, error) {
+	return c.getWithRetry(path, true)
+}
+
+func (c *downloadContext) doGetStream(path string) (*http.Response, error) {
+	resp, _, err := c.getWithRetry(path, false)
+	return resp, err
+}
+
+// getWithRetry fetches path, retrying transient failures. When buffered is
+// true the body is read fully into memory and closed before returning;
+// otherwise the caller owns the open response body and must close it.
+func (c *downloadContext) getWithRetry(path string, buffered bool) (*http.Response, []byte, error) {
 	target := c.baseURL + "/" + path
 	var lastErr error
 
@@ -64,6 +76,10 @@ func (c *downloadContext) doGet(path string) (*http.Response, []byte, error) {
 			continue
 		}
 
+		if !buffered {
+			return resp, nil, nil
+		}
+
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
@@ -73,25 +89,4 @@ func (c *downloadContext) doGet(path string) (*http.Response, []byte, error) {
 		return resp, body, nil
 	}
 	return nil, nil, lastErr
-}
-
-func (c *downloadContext) doGetStream(path string) (*http.Response, error) {
-	target := c.baseURL + "/" + path
-	var lastErr error
-
-	for attempt := 0; attempt < defaultRetries; attempt++ {
-		req, err := http.NewRequest(http.MethodGet, target, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("User-Agent", defaultUserAgent)
-
-		resp, err := c.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return resp, nil
-	}
-	return nil, lastErr
 }
