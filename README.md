@@ -31,6 +31,7 @@ If `/.git/` serves an HTML directory listing, the tool switches to recursive mod
 | Flag | Description |
 | --- | --- |
 | `-b string` | additional branch name to check for (repeatable) |
+| `-v` | verbose output (log every fetched file) |
 | `-version` | print version and exit |
 
 ## INSTALL

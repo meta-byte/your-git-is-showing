@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +20,16 @@ type downloadContext struct {
 	baseURL   string
 	directory string
 	client    *http.Client
+	verbose   bool
+	fetched   atomic.Int64
+}
+
+// logf prints informational output to stdout only in verbose mode.
+// Errors and warnings go to stderr unconditionally.
+func (c *downloadContext) logf(format string, args ...any) {
+	if c.verbose {
+		fmt.Printf(format, args...)
+	}
 }
 
 func newHTTPClient() *http.Client {

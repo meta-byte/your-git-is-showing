@@ -12,6 +12,8 @@ import (
 func main() {
 	var showVersion bool
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	var verbose bool
+	flag.BoolVar(&verbose, "v", false, "verbose output (log every fetched file)")
 	var branches multiFlag
 	flag.Var(&branches, "b", "additional branch name to check for (repeatable)")
 
@@ -55,10 +57,12 @@ func main() {
 		BaseURL:   url,
 		Directory: absDir,
 		Branches:  branches,
+		Verbose:   verbose,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Printf("success: %s\n", absDir)
 }
 
 type multiFlag []string

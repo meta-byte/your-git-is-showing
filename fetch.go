@@ -94,6 +94,7 @@ type FetchOptions struct {
 	BaseURL   string
 	Directory string
 	Branches  []string
+	Verbose   bool
 }
 
 func fetchGit(opts FetchOptions) error {
@@ -102,13 +103,14 @@ func fetchGit(opts FetchOptions) error {
 	}
 
 	if entries, _ := os.ReadDir(opts.Directory); len(entries) > 0 {
-		fmt.Printf("Warning: Destination '%s' is not empty\n", opts.Directory)
+		fmt.Fprintf(os.Stderr, "Warning: Destination '%s' is not empty\n", opts.Directory)
 	}
 
 	ctx := &downloadContext{
 		baseURL:   normalizeBaseURL(opts.BaseURL),
 		directory: opts.Directory,
 		client:    newHTTPClient(),
+		verbose:   opts.Verbose,
 	}
 
 	listing, err := probe(ctx)
@@ -116,9 +118,14 @@ func fetchGit(opts FetchOptions) error {
 		return err
 	}
 	if listing {
-		return fetchRecursive(ctx)
+		if err := fetchRecursive(ctx); err != nil {
+			return err
+		}
+	} else if err := fetchTargeted(ctx, opts); err != nil {
+		return err
 	}
-	return fetchTargeted(ctx, opts)
+	ctx.logf("[+] Done. %d files fetched.\n", ctx.fetched.Load())
+	return nil
 }
 
 // probe verifies the target serves a usable .git directory and reports
@@ -126,12 +133,12 @@ func fetchGit(opts FetchOptions) error {
 func probe(ctx *downloadContext) (bool, error) {
 	url := ctx.baseURL
 
-	fmt.Printf("[-] Testing %s/.git/HEAD ", url)
+	ctx.logf("[-] Testing %s/.git/HEAD ", url)
 	resp, body, err := ctx.doGet(".git/HEAD")
 	if err != nil {
 		return false, fmt.Errorf("unable to connect to %s: %w", url, err)
 	}
-	fmt.Printf("[%d]\n", resp.StatusCode)
+	ctx.logf("[%d]\n", resp.StatusCode)
 	if err := verifyResponse(resp); err != nil {
 		return false, fmt.Errorf("%s/.git/HEAD %w", url, err)
 	}
@@ -139,12 +146,12 @@ func probe(ctx *downloadContext) (bool, error) {
 		return false, fmt.Errorf("%s/.git/HEAD is not a git HEAD file", url)
 	}
 
-	fmt.Printf("[-] Testing %s/.git/ ", url)
+	ctx.logf("[-] Testing %s/.git/ ", url)
 	resp, body, err = ctx.doGet(".git/")
 	if err != nil {
 		return false, fmt.Errorf("error fetching .git/: %w", err)
 	}
-	fmt.Printf("[%d]\n", resp.StatusCode)
+	ctx.logf("[%d]\n", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK || !isHTML(resp) {
 		return false, nil
@@ -159,16 +166,16 @@ func probe(ctx *downloadContext) (bool, error) {
 
 // fetchRecursive downloads the entire .git tree from an HTML directory listing.
 func fetchRecursive(ctx *downloadContext) error {
-	fmt.Printf("[-] Fetching .git recursively\n")
+	ctx.logf("[-] Fetching .git recursively\n")
 	if err := processTasks([]string{".git/", ".gitignore"}, defaultJobs, makeRecursiveDownloadWorker(ctx), nil); err != nil {
 		return err
 	}
 
-	fmt.Printf("[-] Sanitizing .git/config\n")
+	ctx.logf("[-] Sanitizing .git/config\n")
 	if err := sanitizeFile(filepath.Join(ctx.directory, ".git", "config")); err != nil {
 		return err
 	}
-	fmt.Printf("[-] Running git checkout .\n")
+	ctx.logf("[-] Running git checkout .\n")
 	if err := runGitCheckout(ctx.directory); err != nil {
 		return fmt.Errorf("git checkout failed: %w", err)
 	}
@@ -178,17 +185,17 @@ func fetchRecursive(ctx *downloadContext) error {
 // fetchTargeted reconstructs the repo without a directory listing by
 // fetching known files, refs, packs, and loose objects.
 func fetchTargeted(ctx *downloadContext, opts FetchOptions) error {
-	fmt.Printf("[-] Fetching common files\n")
+	ctx.logf("[-] Fetching common files\n")
 	if err := processTasks(commonFileTasks, defaultJobs, makeDownloadWorker(ctx), nil); err != nil {
 		return err
 	}
 
-	fmt.Printf("[-] Finding refs/\n")
+	ctx.logf("[-] Finding refs/\n")
 	refTasks := append([]string{}, defaultRefTasks...)
 	refTasks = append(refTasks, branchRefTasks(defaultBranches)...)
 	for _, branch := range opts.Branches {
 		if !branchPattern.MatchString(branch) {
-			fmt.Printf("Warning: ignoring invalid branch name '%s'\n", branch)
+			fmt.Fprintf(os.Stderr, "Warning: ignoring invalid branch name '%s'\n", branch)
 			continue
 		}
 		refTasks = append(refTasks, branchRefTasks([]string{branch})...)
@@ -197,12 +204,12 @@ func fetchTargeted(ctx *downloadContext, opts FetchOptions) error {
 		return err
 	}
 
-	fmt.Printf("[-] Finding packs\n")
+	ctx.logf("[-] Finding packs\n")
 	if err := processTasks(packTasksFromInfo(ctx.directory), defaultJobs, makeDownloadWorker(ctx), nil); err != nil {
 		return err
 	}
 
-	fmt.Printf("[-] Finding objects\n")
+	ctx.logf("[-] Finding objects\n")
 	objs, packedObjs, err := collectObjectSHAs(ctx.directory)
 	if err != nil {
 		return fmt.Errorf("error collecting objects: %w", err)
@@ -213,16 +220,16 @@ func fetchTargeted(ctx *downloadContext, opts FetchOptions) error {
 		objList = append(objList, obj)
 	}
 
-	fmt.Printf("[-] Fetching objects\n")
+	ctx.logf("[-] Fetching objects\n")
 	if err := processTasks(objList, defaultJobs, makeFindObjectsWorker(ctx), packedObjs); err != nil {
 		return err
 	}
 
-	fmt.Printf("[-] Sanitizing .git/config\n")
+	ctx.logf("[-] Sanitizing .git/config\n")
 	if err := sanitizeFile(filepath.Join(ctx.directory, ".git", "config")); err != nil {
 		return err
 	}
-	fmt.Printf("[-] Running git checkout .\n")
+	ctx.logf("[-] Running git checkout .\n")
 	if err := runGitCheckout(ctx.directory); err != nil {
 		return fmt.Errorf("git checkout failed: %w", err)
 	}

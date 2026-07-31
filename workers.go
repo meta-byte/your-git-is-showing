@@ -103,7 +103,9 @@ drain:
 func fetchToFile(ctx *downloadContext, relPath string) (string, error) {
 	localPath := filepath.Join(ctx.directory, relPath)
 	if _, err := os.Stat(localPath); err == nil {
-		fmt.Printf("[-] Already downloaded %s/%s\n", ctx.baseURL, relPath)
+		if ctx.verbose {
+			fmt.Printf("[-] Already downloaded %s/%s\n", ctx.baseURL, relPath)
+		}
 		absPath, _ := filepath.Abs(localPath)
 		return absPath, nil
 	}
@@ -114,7 +116,9 @@ func fetchToFile(ctx *downloadContext, relPath string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	fmt.Printf("[-] Fetching %s/%s [%d]\n", ctx.baseURL, relPath, resp.StatusCode)
+	if ctx.verbose {
+		fmt.Printf("[-] Fetching %s/%s [%d]\n", ctx.baseURL, relPath, resp.StatusCode)
+	}
 
 	if !downloadOK(ctx, resp, relPath) {
 		return "", nil
@@ -125,22 +129,30 @@ func fetchToFile(ctx *downloadContext, relPath string) (string, error) {
 	if err := writeFile(resp.Body, absPath); err != nil {
 		return "", err
 	}
+	ctx.fetched.Add(1)
 	return absPath, nil
 }
 
 // downloadOK reports whether a response is a valid file download. Soft
-// failures (wrong status, empty body, HTML) are logged and skipped.
+// failures (wrong status, empty body, HTML) are skipped and only reported
+// in verbose mode.
 func downloadOK(ctx *downloadContext, resp *http.Response, relPath string) bool {
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "[-] %s/%s responded with status code %d\n", ctx.baseURL, relPath, resp.StatusCode)
+		if ctx.verbose {
+			fmt.Fprintf(os.Stderr, "[-] %s/%s responded with status code %d\n", ctx.baseURL, relPath, resp.StatusCode)
+		}
 		return false
 	}
 	if resp.Header.Get("Content-Length") == "0" {
-		fmt.Fprintf(os.Stderr, "[-] %s/%s responded with a zero-length body\n", ctx.baseURL, relPath)
+		if ctx.verbose {
+			fmt.Fprintf(os.Stderr, "[-] %s/%s responded with a zero-length body\n", ctx.baseURL, relPath)
+		}
 		return false
 	}
 	if isHTML(resp) {
-		fmt.Fprintf(os.Stderr, "[-] %s/%s responded with HTML\n", ctx.baseURL, relPath)
+		if ctx.verbose {
+			fmt.Fprintf(os.Stderr, "[-] %s/%s responded with HTML\n", ctx.baseURL, relPath)
+		}
 		return false
 	}
 	return true
@@ -172,7 +184,9 @@ func makeRecursiveDownloadWorker(ctx *downloadContext) func(string) ([]string, e
 	return func(relPath string) ([]string, error) {
 		localPath := filepath.Join(ctx.directory, relPath)
 		if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
-			fmt.Printf("[-] Already downloaded %s/%s\n", ctx.baseURL, relPath)
+			if ctx.verbose {
+				fmt.Printf("[-] Already downloaded %s/%s\n", ctx.baseURL, relPath)
+			}
 			return nil, nil
 		}
 
@@ -182,7 +196,9 @@ func makeRecursiveDownloadWorker(ctx *downloadContext) func(string) ([]string, e
 		}
 		defer resp.Body.Close()
 
-		fmt.Printf("[-] Fetching %s/%s [%d]\n", ctx.baseURL, relPath, resp.StatusCode)
+		if ctx.verbose {
+			fmt.Printf("[-] Fetching %s/%s [%d]\n", ctx.baseURL, relPath, resp.StatusCode)
+		}
 
 		if (resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound) &&
 			resp.Header.Get("Location") != "" &&
@@ -203,6 +219,7 @@ func makeRecursiveDownloadWorker(ctx *downloadContext) func(string) ([]string, e
 		if err := writeFile(resp.Body, absPath); err != nil {
 			return nil, err
 		}
+		ctx.fetched.Add(1)
 		return nil, nil
 	}
 }
