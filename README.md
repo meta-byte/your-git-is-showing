@@ -77,6 +77,6 @@ go test ./...
 
 `golang.org/x/net` (HTML parsing), `golang.org/x/sync` (bounded worker pool).
 
-## NOTE
+## DISCLAIMER
 
-Fun, but not a toy. Running this against a target you don't own is how you make an enemies list. Ask first, point out the `.git` after — gently.
+Fun, but not a toy. Use this tool solely against systems you own or have explicit permission to test. The author assumes no liability for misuse. Happy hacking.
