@@ -1,6 +1,5 @@
 # your-git-is-showing
 
-## NAME
 
 your-git-is-showing — dump an exposed git repository
 
