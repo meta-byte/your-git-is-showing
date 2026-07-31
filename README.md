@@ -45,12 +45,6 @@ Requires Go 1.25+. Installs into `$GOPATH/bin`. Or build from source:
 go build .
 ```
 
-A man page ships in `man/your-git-is-showing.1`. View it without installing:
-
-```
-mandoc -Tutf8 man/your-git-is-showing.1
-```
-
 ## EXAMPLES
 
 ```
