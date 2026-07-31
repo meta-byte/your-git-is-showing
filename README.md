@@ -31,6 +31,19 @@ If `/.git/` serves an HTML directory listing, the tool switches to recursive mod
 | Flag | Description |
 | --- | --- |
 | `-b string` | additional branch name to check for (repeatable) |
+| `-version` | print version and exit |
+
+## INSTALL
+
+```
+go install github.com/meta-byte/your-git-is-showing@latest
+```
+
+Requires Go 1.25+. Installs into `$GOPATH/bin`. Or build from source:
+
+```
+go build .
+```
 
 ## EXAMPLES
 

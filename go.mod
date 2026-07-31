@@ -1,4 +1,4 @@
-module your-git-is-showing
+module github.com/meta-byte/your-git-is-showing
 
 go 1.25.0
 

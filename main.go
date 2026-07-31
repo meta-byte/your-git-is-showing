@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 )
 
 func main() {
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	var branches multiFlag
 	flag.Var(&branches, "b", "additional branch name to check for (repeatable)")
 
@@ -19,6 +22,10 @@ func main() {
 	}
 
 	flag.Parse()
+	if showVersion {
+		fmt.Println(versionString())
+		return
+	}
 	args := flag.Args()
 	if len(args) != 2 {
 		flag.Usage()
@@ -63,4 +70,23 @@ func (m *multiFlag) String() string {
 func (m *multiFlag) Set(value string) error {
 	*m = append(*m, value)
 	return nil
+}
+
+// versionString reports the module version and VCS revision stamped into the
+// binary by the build system (e.g. "v0.1.0 (abcd1234)" via `go install`).
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	version := info.Main.Version
+	if version == "" || version == "(devel)" {
+		version = "dev"
+	}
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" && len(s.Value) >= 8 {
+			return fmt.Sprintf("%s (%s)", version, s.Value[:8])
+		}
+	}
+	return version
 }
