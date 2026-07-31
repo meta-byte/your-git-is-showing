@@ -1,7 +1,7 @@
 # your-git-is-showing
 
 
-your-git-is-showing — dump an exposed git repository
+Dump an exposed git repository.
 
 ## SYNOPSIS
 
