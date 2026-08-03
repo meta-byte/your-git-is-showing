@@ -11,8 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
+
+// maxObjectBuffer bounds how much of a single decompressed object is
+// buffered for ref extraction. Larger objects (e.g. giant blobs) are
+// streamed and discarded instead of loaded into memory.
+const maxObjectBuffer = 64 << 20
 
 type objType string
 
@@ -34,36 +40,34 @@ const (
 )
 
 func getReferencedSHA1(objPath string) ([]string, error) {
-	raw, err := os.ReadFile(objPath)
+	f, err := os.Open(objPath)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
-	t, data, err := readLooseObject(raw)
+	t, data, err := readLooseObject(f)
 	if err != nil {
 		return nil, err
 	}
 	return referencedSHAsFromObject(t, data)
 }
 
-func readLooseObject(raw []byte) (objType, []byte, error) {
-	r, err := zlib.NewReader(bytes.NewReader(raw))
+// readLooseObject streams a loose object from r instead of buffering the
+// whole file. Blob and tag content is discarded after the header; commit
+// and tree content is buffered only up to maxObjectBuffer.
+func readLooseObject(r io.Reader) (objType, []byte, error) {
+	zr, err := zlib.NewReader(r)
 	if err != nil {
 		return objInvalid, nil, err
 	}
-	defer r.Close()
+	defer zr.Close()
 
-	decompressed, err := io.ReadAll(r)
+	hdr, err := readObjectHeader(zr)
 	if err != nil {
 		return objInvalid, nil, err
 	}
-
-	nul := bytes.IndexByte(decompressed, 0)
-	if nul < 0 {
-		return objInvalid, nil, fmt.Errorf("invalid object")
-	}
-
-	fields := strings.SplitN(string(decompressed[:nul]), " ", 2)
+	fields := strings.SplitN(hdr, " ", 2)
 	if len(fields) != 2 {
 		return objInvalid, nil, fmt.Errorf("invalid object header")
 	}
@@ -72,7 +76,48 @@ func readLooseObject(raw []byte) (objType, []byte, error) {
 	if t == objInvalid {
 		return objInvalid, nil, fmt.Errorf("unknown object type %q", fields[0])
 	}
-	return t, decompressed[nul+1:], nil
+	size, err := strconv.Atoi(fields[1])
+	if err != nil || size < 0 {
+		return objInvalid, nil, fmt.Errorf("invalid object size %q", fields[1])
+	}
+
+	if (t != objCommit && t != objTree) || int64(size) > maxObjectBuffer {
+		_, _ = io.CopyN(io.Discard, zr, int64(size))
+		return t, nil, nil
+	}
+
+	data := make([]byte, size)
+	if _, err := io.ReadFull(zr, data); err != nil {
+		return objInvalid, nil, fmt.Errorf("reading object content: %w", err)
+	}
+	return t, data, nil
+}
+
+// readObjectHeader reads the "<type> <size>\0" prefix of a decompressed
+// loose object, bounded to avoid unbounded reads on malformed objects.
+func readObjectHeader(zr io.Reader) (string, error) {
+	const maxHeaderLen = 128
+	var hdr []byte
+	one := make([]byte, 1)
+	for {
+		n, err := zr.Read(one)
+		if err != nil {
+			if err == io.EOF {
+				return "", fmt.Errorf("invalid object")
+			}
+			return "", err
+		}
+		if n == 0 {
+			continue
+		}
+		if one[0] == 0 {
+			return string(hdr), nil
+		}
+		hdr = append(hdr, one[0])
+		if len(hdr) > maxHeaderLen {
+			return "", fmt.Errorf("invalid object header")
+		}
+	}
 }
 
 func parseObjType(s string) objType {
@@ -148,25 +193,32 @@ func refsFromPack(packPath, idxPath string) (packed, all []string, err error) {
 }
 
 func refsFromIdx(idxPath string) ([]string, error) {
-	data, err := os.ReadFile(idxPath)
+	f, err := os.Open(idxPath)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
-	const headerLen = 4 + 4 + 256*4
-	if len(data) < headerLen || !bytes.Equal(data[:4], []byte{0xff, 't', 'O', 'c'}) {
+	// Read only the header/fanout and the object-name table; the CRC and
+	// offset tables that follow are not needed for ref extraction.
+	const fanoutLen = 4 + 4 + 256*4
+	hdr := make([]byte, fanoutLen)
+	if _, err := io.ReadFull(f, hdr); err != nil {
 		return nil, fmt.Errorf("invalid idx file")
 	}
-	if version := binary.BigEndian.Uint32(data[4:8]); version != 2 {
+	if !bytes.Equal(hdr[:4], []byte{0xff, 't', 'O', 'c'}) {
+		return nil, fmt.Errorf("invalid idx file")
+	}
+	if version := binary.BigEndian.Uint32(hdr[4:8]); version != 2 {
 		return nil, fmt.Errorf("unsupported idx version %d", version)
 	}
 
-	count := binary.BigEndian.Uint32(data[4+256*4 : headerLen])
-	if int64(headerLen)+int64(count)*20 > int64(len(data)) {
+	count := binary.BigEndian.Uint32(hdr[4+256*4 : fanoutLen])
+	names := make([]byte, int64(count)*20)
+	if _, err := io.ReadFull(f, names); err != nil {
 		return nil, fmt.Errorf("idx too short")
 	}
 
-	names := data[headerLen : headerLen+int(count)*20]
 	refs := make([]string, 0, count)
 	for i := uint32(0); i < count; i++ {
 		refs = append(refs, hex.EncodeToString(names[i*20:(i+1)*20]))
@@ -217,11 +269,13 @@ func readPackObject(br *bufio.Reader) (byte, []byte, error) {
 		return 0, nil, err
 	}
 	typ := (c >> 4) & 0x7
-	for c&0x80 != 0 {
+	size := int64(c & 0x0f)
+	for shift := uint(4); c&0x80 != 0; shift += 7 {
 		c, err = br.ReadByte()
 		if err != nil {
 			return 0, nil, err
 		}
+		size |= int64(c&0x7f) << shift
 	}
 
 	switch typ {
@@ -242,10 +296,17 @@ func readPackObject(br *bufio.Reader) (byte, []byte, error) {
 	}
 
 	var data []byte
-	if typ == packCommit || typ == packTree {
-		data, err = io.ReadAll(zr)
+	if (typ == packCommit || typ == packTree) && size <= maxObjectBuffer {
+		data = make([]byte, size)
+		if _, err = io.ReadFull(zr, data); err != nil {
+			closeErr := zr.Close()
+			if closeErr != nil {
+				return 0, nil, closeErr
+			}
+			return 0, nil, err
+		}
 	} else {
-		_, err = io.Copy(io.Discard, zr)
+		_, err = io.CopyN(io.Discard, zr, size)
 	}
 	closeErr := zr.Close()
 	if err != nil {
@@ -277,46 +338,45 @@ func readOfsOffset(br *bufio.Reader) (int64, error) {
 }
 
 func refsFromIndex(indexPath string) ([]string, error) {
-	data, err := os.ReadFile(indexPath)
+	f, err := os.Open(indexPath)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) < 4 {
+	defer f.Close()
+
+	head := make([]byte, 12)
+	if _, err := io.ReadFull(f, head); err != nil {
 		return nil, fmt.Errorf("index too short")
 	}
-	if string(data[:4]) != "DIRC" {
+	if string(head[:4]) != "DIRC" {
 		return nil, fmt.Errorf("invalid index signature")
 	}
 
-	pos := 4
-	if len(data) < pos+4 {
-		return nil, fmt.Errorf("invalid index")
-	}
-	_ = binary.BigEndian.Uint32(data[pos : pos+4])
-	pos += 4
-
-	if len(data) < pos+4 {
-		return nil, fmt.Errorf("invalid index")
-	}
-	count := binary.BigEndian.Uint32(data[pos : pos+4])
-	pos += 4
+	count := binary.BigEndian.Uint32(head[8:12])
 
 	var refs []string
 	for i := uint32(0); i < count; i++ {
-		if len(data) < pos+62 {
+		var entry [62]byte
+		if _, err := io.ReadFull(f, entry[:]); err != nil {
 			break
 		}
-		refs = append(refs, hex.EncodeToString(data[pos+40:pos+60]))
-		nameLen := binary.BigEndian.Uint16(data[pos+60 : pos+62])
+		refs = append(refs, hex.EncodeToString(entry[40:60]))
+		nameLen := binary.BigEndian.Uint16(entry[60:62])
 		entryLen := 62 + int(nameLen&0xfff)
 		if nameLen&0x8000 != 0 {
-			if len(data) < pos+64 {
+			var ext [4]byte
+			if _, err := io.ReadFull(f, ext[:]); err != nil {
 				break
 			}
-			entryLen = 62 + int(binary.BigEndian.Uint32(data[pos+62:pos+66]))
+			entryLen = 62 + int(binary.BigEndian.Uint32(ext[:]))
+		}
+		if _, err := io.CopyN(io.Discard, f, int64(entryLen-62)); err != nil {
+			break
 		}
 		padding := (8 - (entryLen % 8)) % 8
-		pos += entryLen + padding
+		if _, err := io.CopyN(io.Discard, f, int64(padding)); err != nil {
+			break
+		}
 	}
 	return refs, nil
 }

@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -113,21 +114,23 @@ func TestRefsFromTree(t *testing.T) {
 
 func TestReadLooseObject(t *testing.T) {
 	commitData := []byte("tree " + shaC + "\n\nauthor A <a@b> 1 +0000\n")
+	commitObj := append([]byte(fmt.Sprintf("commit %d\x00", len(commitData))), commitData...)
 	tests := []struct {
 		name    string
 		in      []byte
 		wantTyp objType
 		wantErr bool
 	}{
-		{"valid commit", zlibBytes(append([]byte("commit 57\x00"), commitData...)), objCommit, false},
+		{"valid commit", zlibBytes(commitObj), objCommit, false},
 		{"valid blob", zlibBytes([]byte("blob 4\x00data")), objBlob, false},
 		{"unknown type", zlibBytes([]byte("wat 0\x00x")), objInvalid, true},
 		{"no header nul", zlibBytes([]byte("no nul here")), objInvalid, true},
 		{"not zlib", []byte{0xff, 0xee}, objInvalid, true},
+		{"oversized header", zlibBytes([]byte("blob 99999999999\x00" + string(make([]byte, 100)))), objBlob, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, data, err := readLooseObject(tt.in)
+			got, data, err := readLooseObject(bytes.NewReader(tt.in))
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("readLooseObject() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -205,11 +208,30 @@ func buildPack(objects [][2]any) []byte {
 	for _, o := range objects {
 		typ := o[0].(byte)
 		data := o[1].([]byte)
-		size := len(data)
-		buf.WriteByte((typ << 4) | byte(size&0x0f))
+		writePackObjectHeader(&buf, typ, len(data))
 		buf.Write(zlibBytes(data))
 	}
 	return buf.Bytes()
+}
+
+// writePackObjectHeader encodes a pack entry type and size varint matching
+// git's format: type in the high bits of the first byte, size starting in
+// the low nibble, then 7-bit groups with a continuation bit.
+func writePackObjectHeader(buf *bytes.Buffer, typ byte, size int) {
+	first := byte(typ<<4) | byte(size&0x0f)
+	size >>= 4
+	if size > 0 {
+		first |= 0x80
+	}
+	buf.WriteByte(first)
+	for size > 0 {
+		b := byte(size & 0x7f)
+		size >>= 7
+		if size > 0 {
+			b |= 0x80
+		}
+		buf.WriteByte(b)
+	}
 }
 
 func buildIndexEntry(sha string, name string) []byte {
