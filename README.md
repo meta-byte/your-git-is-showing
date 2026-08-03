@@ -20,7 +20,7 @@ If `/.git/` serves an HTML directory listing, the tool switches to recursive mod
 ## FEATURES
 
 - 50 concurrent requests
-- 3 retries per request, 3s per-request timeout
+- 3 retries per request, 5s per-request timeout
 - Browser user-agent by default
 - Probes 10 common branch names by default: `main`, `master`, `staging`, `production`, `development`, `dev`, `develop`, `release`, `qa`, `hotfix`
 - Recursive download of `/.git/` when the server exposes a directory listing

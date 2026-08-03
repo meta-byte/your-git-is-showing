@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultRetries   = 3
-	defaultTimeout   = 3 * time.Second
+	defaultTimeout   = 5 * time.Second
 	defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; rv:78.0) Gecko/20100101 Firefox/78.0"
 )
 
