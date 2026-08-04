@@ -13,7 +13,7 @@ func isHTML(response *http.Response) bool {
 	return strings.Contains(ct, "text/html")
 }
 
-func getIndexedFiles(body string) []string {
+func getIndexedFiles(baseDir, body string) []string {
 	doc, err := html.Parse(strings.NewReader(body))
 	if err != nil {
 		return nil
@@ -29,7 +29,7 @@ func getIndexedFiles(body string) []string {
 					if err != nil {
 						continue
 					}
-					if u.Path != "" && isSafePath(u.Path) && u.Scheme == "" && u.Host == "" {
+					if u.Path != "" && isSafePath(baseDir, u.Path) && u.Scheme == "" && u.Host == "" {
 						files = append(files, u.Path)
 					}
 				}

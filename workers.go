@@ -101,6 +101,12 @@ drain:
 }
 
 func fetchToFile(ctx *downloadContext, relPath string) (string, error) {
+	if !isSafePath(ctx.directory, relPath) {
+		if ctx.verbose {
+			fmt.Fprintf(os.Stderr, "[-] Skipping unsafe path %s\n", relPath)
+		}
+		return "", nil
+	}
 	localPath := filepath.Join(ctx.directory, relPath)
 	if _, err := os.Stat(localPath); err == nil {
 		if ctx.verbose {
@@ -182,6 +188,12 @@ func makeDownloadWorker(ctx *downloadContext) func(string) ([]string, error) {
 
 func makeRecursiveDownloadWorker(ctx *downloadContext) func(string) ([]string, error) {
 	return func(relPath string) ([]string, error) {
+		if !isSafePath(ctx.directory, relPath) {
+			if ctx.verbose {
+				fmt.Fprintf(os.Stderr, "[-] Skipping unsafe path %s\n", relPath)
+			}
+			return nil, nil
+		}
 		localPath := filepath.Join(ctx.directory, relPath)
 		if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
 			if ctx.verbose {
@@ -207,7 +219,7 @@ func makeRecursiveDownloadWorker(ctx *downloadContext) func(string) ([]string, e
 		}
 
 		if strings.HasSuffix(relPath, "/") {
-			return parseDirectoryListing(resp, relPath)
+			return parseDirectoryListing(ctx, resp, relPath)
 		}
 
 		if !downloadOK(ctx, resp, relPath) {
@@ -224,7 +236,7 @@ func makeRecursiveDownloadWorker(ctx *downloadContext) func(string) ([]string, e
 	}
 }
 
-func parseDirectoryListing(resp *http.Response, relPath string) ([]string, error) {
+func parseDirectoryListing(ctx *downloadContext, resp *http.Response, relPath string) ([]string, error) {
 	if !isHTML(resp) {
 		return nil, nil
 	}
@@ -233,7 +245,7 @@ func parseDirectoryListing(resp *http.Response, relPath string) ([]string, error
 		return nil, fmt.Errorf("reading directory listing %s: %w", relPath, err)
 	}
 	var tasks []string
-	for _, name := range getIndexedFiles(string(body)) {
+	for _, name := range getIndexedFiles(ctx.directory, string(body)) {
 		tasks = append(tasks, relPath+name)
 	}
 	return tasks, nil
@@ -262,7 +274,7 @@ func makeFindRefsWorker(ctx *downloadContext) func(string) ([]string, error) {
 			if strings.HasSuffix(ref, "*") {
 				continue
 			}
-			if !isSafePath(ref) {
+			if !isSafePath(ctx.directory, ref) {
 				continue
 			}
 			tasks = append(tasks, ".git/"+ref, ".git/logs/"+ref)

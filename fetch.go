@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -8,11 +9,26 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var headPattern = regexp.MustCompile(`^(ref:.*|[0-9a-f]{40}$)`)
 
-var branchPattern = regexp.MustCompile(`^[A-Za-z0-9\-\._]+$`)
+// branchPattern matches git branch names, including slash-separated
+// namespaced branches such as feature/foo. A leading alphanumeric keeps
+// the name from resolving to a dot path component like "." or "..".
+var branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9\-._/]*$`)
+
+// isSafeBranchName rejects branch names whose slash components could
+// escape the dump directory ("..") or are otherwise invalid.
+func isSafeBranchName(branch string) bool {
+	for _, part := range strings.Split(branch, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 var packRe = regexp.MustCompile(`pack-([a-f0-9]{40})\.pack`)
 
@@ -80,14 +96,11 @@ var commonFileTasks = []string{
 }
 
 func normalizeBaseURL(raw string) string {
-	url := strings.TrimRight(raw, "/")
-	if strings.HasSuffix(url, "HEAD") {
-		url = strings.TrimRight(url[:len(url)-4], "/")
-	}
-	if strings.HasSuffix(url, ".git") {
-		url = strings.TrimRight(url[:len(url)-4], "/")
-	}
-	return url
+	u := strings.TrimRight(raw, "/")
+	u = strings.TrimSuffix(u, "HEAD")
+	u = strings.TrimRight(u, "/")
+	u = strings.TrimSuffix(u, ".git")
+	return strings.TrimRight(u, "/")
 }
 
 type FetchOptions struct {
@@ -156,7 +169,7 @@ func probe(ctx *downloadContext) (bool, error) {
 	if resp.StatusCode != http.StatusOK || !isHTML(resp) {
 		return false, nil
 	}
-	for _, f := range getIndexedFiles(string(body)) {
+	for _, f := range getIndexedFiles(ctx.directory, string(body)) {
 		if f == "HEAD" {
 			return true, nil
 		}
@@ -194,7 +207,7 @@ func fetchTargeted(ctx *downloadContext, opts FetchOptions) error {
 	refTasks := append([]string{}, defaultRefTasks...)
 	refTasks = append(refTasks, branchRefTasks(defaultBranches)...)
 	for _, branch := range opts.Branches {
-		if !branchPattern.MatchString(branch) {
+		if !branchPattern.MatchString(branch) || !isSafeBranchName(branch) {
 			fmt.Fprintf(os.Stderr, "Warning: ignoring invalid branch name '%s'\n", branch)
 			continue
 		}
@@ -252,7 +265,23 @@ func packTasksFromInfo(directory string) []string {
 	return packTasks
 }
 
+// gitCheckoutTimeout bounds how long `git checkout .` may take. A dump
+// directory can be large, but a hung git should not hang the tool forever.
+const gitCheckoutTimeout = 5 * time.Minute
+
+// runGitCheckout materializes the working tree. The command is bounded by
+// gitCheckoutTimeout and failures include git's combined output for context.
 func runGitCheckout(directory string) error {
-	cmd := exec.Command("git", "-C", directory, "checkout", ".")
-	return cmd.Run()
+	ctx, cancel := context.WithTimeout(context.Background(), gitCheckoutTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "-C", directory, "checkout", ".")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if o := strings.TrimSpace(string(out)); o != "" {
+			return fmt.Errorf("%w: %s", err, o)
+		}
+		return err
+	}
+	return nil
 }

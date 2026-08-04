@@ -10,24 +10,24 @@ import (
 
 var unsafeConfigLine = regexp.MustCompile(`(?im)^\s*(fsmonitor|sshcommand|askpass|editor|pager)`)
 
-func isSafePath(path string) bool {
+// isSafePath reports whether path, joined to baseDir, stays inside baseDir.
+// baseDir is resolved through symlinks first so checks survive dump
+// directories that live behind one (e.g. macOS /var -> /private/var); the
+// joined path is likewise resolved when it already exists.
+func isSafePath(baseDir, path string) bool {
 	if strings.HasPrefix(path, "/") {
 		return false
 	}
-	home, err := os.UserHomeDir()
+	base, err := filepath.EvalSymlinks(baseDir)
 	if err != nil {
-		return false
+		base = filepath.Clean(baseDir)
 	}
-	joined := filepath.Join(home, path)
+	joined := filepath.Join(base, path)
 	real, err := filepath.EvalSymlinks(joined)
 	if err != nil {
 		real = filepath.Clean(joined)
 	}
-	homeReal, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		homeReal = filepath.Clean(home)
-	}
-	return isWithinDir(real, homeReal)
+	return isWithinDir(real, base)
 }
 
 func isWithinDir(path, dir string) bool {
